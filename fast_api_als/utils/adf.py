@@ -11,6 +11,7 @@ regex = r'^(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])
 match_iso8601 = re.compile(regex).match
 zipcode_search = SearchEngine()
 
+logger = logging.Logger(__name__)
 
 def process_before_validating(input_json):
     if isinstance(input_json['adf']['prospect']['id'], dict):
@@ -38,8 +39,10 @@ def is_nan(x):
 
 
 def parse_xml(adf_xml):
-    # use exception handling
-    obj = xmltodict.parse(adf_xml)
+    try:
+        obj = xmltodict.parse(adf_xml)
+    except Exception as e:
+        logger.error(e)
     return obj
 
 

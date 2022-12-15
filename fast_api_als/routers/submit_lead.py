@@ -24,12 +24,14 @@ from fast_api_als.utils.sqs_utils import sqs_helper_session
 router = APIRouter()
 
 """
-Add proper logging and exception handling.
+Add proper logger and exception handling.
 
 keep in mind:
 You as a developer has to find how much time each part of code takes.
 you will get the idea about the part when you go through the code.
 """
+
+logger = logging.getLogger(__name__)
 
 @router.post("/submit/")
 async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
@@ -37,8 +39,7 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
     t1 = [int(time.time() * 1000.0)]
     
     if not db_helper_session.verify_api_key(apikey):
-        # throw proper fastpi.HTTPException
-        pass
+        raise fastapi.HTTPException(status_code=500, detail="Invalid API Key")
     
     body = await file.body()
     body = str(body, 'utf-8')
@@ -47,7 +48,12 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
 
     # check if xml was not parsable, if not return
     if not obj:
-        provider = db_helper_session.get_api_key_author(apikey)
+        logger.info("XML was not parsable")
+        try:
+            provider = db_helper_session.get_api_key_author(apikey)
+        except Exception as e:
+            logger.error(e)
+            raise Exception(e)
         obj = {
             'provider': {
                 'service': provider
@@ -68,6 +74,7 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
 
     #if not valid return
     if not validation_check:
+        logger.info("XML was not valid")
         item, path = create_quicksight_data(obj['adf']['prospect'], lead_hash, 'REJECTED', validation_code, {})
         s3_helper_client.put_file(item, path)
         return {
@@ -87,19 +94,26 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
 
     # check if 3PL is making a duplicate call or it is a duplicate lead
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(db_helper_session.check_duplicate_api_call, lead_hash,
-                                   obj['adf']['prospect']['provider']['service']),
-                   executor.submit(db_helper_session.check_duplicate_lead, email, phone, last_name, make, model),
-                   executor.submit(db_helper_session.fetch_oem_data, make, True)
-                   ]
+        try:
+            futures = [executor.submit(db_helper_session.check_duplicate_api_call, lead_hash,
+                                    obj['adf']['prospect']['provider']['service']),
+                    executor.submit(db_helper_session.check_duplicate_lead, email, phone, last_name, make, model),
+                    executor.submit(db_helper_session.fetch_oem_data, make, True)
+                    ]
+        except Exception as e:
+            logger.error(e)
+            raise Exception(e)
+
         for future in as_completed(futures):
             result = future.result()
             if result.get('Duplicate_Api_Call', {}).get('status', False):
+                logger.info("Duplicate API Call")
                 return {
                     "status": f"Already {result['Duplicate_Api_Call']['response']}",
                     "message": "Duplicate Api Call"
                 }
             if result.get('Duplicate_Lead', False):
+                logger.info("Duplicate Lead")
                 return {
                     "status": "REJECTED",
                     "code": "12_DUPLICATE",
@@ -108,12 +122,14 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
             if "fetch_oem_data" in result:
                 fetched_oem_data = result['fetch_oem_data']
     if fetched_oem_data == {}:
+        logger.info("Data fetched was empty")
         return {
             "status": "REJECTED",
             "code": "20_OEM_DATA_NOT_FOUND",
             "message": "OEM data not found"
         }
     if 'threshold' not in fetched_oem_data:
+        logger.info("OEM data was not found")
         return {
             "status": "REJECTED",
             "code": "20_OEM_DATA_NOT_FOUND",
@@ -123,10 +139,17 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
 
     # if dealer is not available then find nearest dealer
     if not dealer_available:
+        logger.info('Finding Nearest Dealer')
         lat, lon = get_customer_coordinate(obj['adf']['prospect']['customer']['contact']['address']['postalcode'])
-        nearest_vendor = db_helper_session.fetch_nearest_dealer(oem=make,
+
+        try:
+            nearest_vendor = db_helper_session.fetch_nearest_dealer(oem=make,
                                                                 lat=lat,
                                                                 lon=lon)
+        except Exception as e:
+            logger.error(e)
+            raise Exception(e)
+        
         obj['adf']['prospect']['vendor'] = nearest_vendor
         dealer_available = True if nearest_vendor != {} else False
 
@@ -161,7 +184,13 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
     # insert the lead into ddb with oem & customer details
     # delegate inserts to sqs queue
     if response_body['status'] == 'ACCEPTED':
-        make_model_filter = db_helper_session.get_make_model_filter_status(make)
+        logger.info("Status Accepted")
+        try:
+            make_model_filter = db_helper_session.get_make_model_filter_status(make)
+        except Exception as e:
+            logger.error(e)
+            raise Exception(e)
+        
         message = {
             'put_file': {
                 'item': item,
@@ -199,6 +228,7 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
         res = sqs_helper_session.send_message(message)
 
     else:
+        logger.info("Status Not Accepted")
         message = {
             'put_file': {
                 'item': item,
@@ -214,5 +244,6 @@ async def submit(file: Request, apikey: APIKey = Depends(get_api_key)):
     time_taken = (int(time.time() * 1000.0) - start)
 
     response_message = f"{result} Response Time : {time_taken} ms"
+    logger.info("Response body generated")
 
     return response_body
