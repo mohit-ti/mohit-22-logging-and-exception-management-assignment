@@ -13,7 +13,7 @@ from fast_api_als.utils.cognito_client import get_user_role
 
 router = APIRouter()
 
-logging.basicConfig(filename='lead_conversion.log', format="%(asctime)s - %(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 def get_quicksight_data(lead_uuid, item):
     """
@@ -35,7 +35,7 @@ def get_quicksight_data(lead_uuid, item):
         "3pl": item.get('3pl', 'unknown'),
         "oem_responded": 1
     }
-    logging.info(f"create lead converted data. uuid -> {uuid}")
+    logger.info(f"create lead converted data. uuid -> {uuid}")
     return data, f"{item['make']}/1_{int(time.time())}_{lead_uuid}"
 
 
